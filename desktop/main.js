@@ -36,6 +36,10 @@ const NETEASE_LOGIN_PARTITION = 'persist:mineradio-netease-login';
 const NETEASE_LOGIN_URL = 'https://music.163.com/#/login';
 const QQ_LOGIN_PARTITION = 'persist:mineradio-qqmusic-login';
 const QQ_LOGIN_URL = 'https://y.qq.com/n/ryqq/profile';
+const YANDEX_LOGIN_PARTITION = 'persist:mineradio-yandex-login';
+// 官方 Yandex Music 客户端 OAuth client_id（非官方社区公认值），仅用于用户自有账号本地登录。
+const YANDEX_OAUTH_CLIENT_ID = process.env.MINERADIO_YANDEX_CLIENT_ID || '23cabbbdc6cd418abb4b39c32c41195d';
+const YANDEX_OAUTH_URL = 'https://oauth.yandex.ru/authorize?response_type=token&client_id=' + YANDEX_OAUTH_CLIENT_ID;
 
 const CHROMIUM_PERFORMANCE_SWITCHES = [
   ['autoplay-policy', 'no-user-gesture-required'],
@@ -616,6 +620,89 @@ async function clearNeteaseMusicLoginSession() {
   return { ok: true };
 }
 
+function extractYandexToken(rawUrl) {
+  if (!rawUrl) return '';
+  try {
+    const u = new URL(rawUrl);
+    const fromHash = new URLSearchParams((u.hash || '').replace(/^#/, ''));
+    if (fromHash.get('access_token')) return fromHash.get('access_token');
+    if (u.searchParams.get('access_token')) return u.searchParams.get('access_token');
+  } catch (e) {
+    const m = String(rawUrl).match(/access_token=([^&]+)/);
+    if (m) return decodeURIComponent(m[1]);
+  }
+  return '';
+}
+
+async function openYandexMusicLoginWindow(owner) {
+  return new Promise((resolve) => {
+    let settled = false;
+
+    const loginWindow = new BrowserWindow({
+      width: 720,
+      height: 760,
+      minWidth: 520,
+      minHeight: 560,
+      parent: owner && !owner.isDestroyed() ? owner : undefined,
+      modal: false,
+      show: false,
+      autoHideMenuBar: true,
+      title: 'Вход в Яндекс Музыку',
+      backgroundColor: '#111111',
+      icon: APP_ICON_ICO,
+      webPreferences: {
+        partition: YANDEX_LOGIN_PARTITION,
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    });
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      if (loginWindow && !loginWindow.isDestroyed()) loginWindow.close();
+      resolve(result);
+    };
+
+    const tryUrl = (rawUrl) => {
+      const token = extractYandexToken(rawUrl);
+      if (token) finish({ ok: true, token });
+    };
+
+    loginWindow.webContents.on('will-redirect', (_e, navUrl) => tryUrl(navUrl));
+    loginWindow.webContents.on('will-navigate', (_e, navUrl) => tryUrl(navUrl));
+    loginWindow.webContents.on('did-navigate', (_e, navUrl) => tryUrl(navUrl));
+    loginWindow.webContents.on('did-navigate-in-page', (_e, navUrl) => tryUrl(navUrl));
+
+    loginWindow.webContents.setWindowOpenHandler(({ url }) => {
+      if (/^https?:\/\//i.test(url)) {
+        loginWindow.loadURL(url).catch((e) => console.warn('Yandex login popup navigation failed:', e.message));
+      } else {
+        shell.openExternal(url).catch(() => {});
+      }
+      return { action: 'deny' };
+    });
+
+    loginWindow.on('ready-to-show', () => loginWindow.show());
+    loginWindow.on('closed', () => {
+      if (settled) return;
+      settled = true;
+      resolve({ ok: false, cancelled: true, message: 'Окно входа Яндекса закрыто' });
+    });
+
+    loginWindow.loadURL(YANDEX_OAUTH_URL).catch((e) => finish({ ok: false, error: e.message }));
+  });
+}
+
+async function clearYandexMusicLoginSession() {
+  const cookieSession = session.fromPartition(YANDEX_LOGIN_PARTITION);
+  await cookieSession.clearStorageData({
+    storages: ['cookies', 'localstorage', 'indexdb', 'cachestorage'],
+  });
+  return { ok: true };
+}
+
 function getWindowedBounds(win) {
   const display = win && !win.isDestroyed()
     ? screen.getDisplayMatching(win.getBounds())
@@ -1174,6 +1261,14 @@ ipcMain.handle('qq-music-open-login', async (event) => {
 
 ipcMain.handle('qq-music-clear-login', async () => {
   return clearQQMusicLoginSession();
+});
+
+ipcMain.handle('yandex-music-open-login', async (event) => {
+  return openYandexMusicLoginWindow(getSenderWindow(event));
+});
+
+ipcMain.handle('yandex-music-clear-login', async () => {
+  return clearYandexMusicLoginSession();
 });
 
 ipcMain.handle('mineradio-open-update-installer', async (_event, filePath) => {

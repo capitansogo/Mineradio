@@ -18,6 +18,7 @@ win-unpacked/
 # User data and private state
 .cookie
 .qq-cookie
+.ya-token
 updates/
 backups/
 *.log
@@ -33,6 +34,9 @@ desktop.ini
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+.idea/
+.vscode/
+*.stackdump
 
 # Historical local experiment files
 public/index.*.html

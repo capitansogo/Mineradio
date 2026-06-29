@@ -53,6 +53,7 @@ const tls = require('tls');
 const { once } = require('events');
 const { fileURLToPath } = require('url');
 const { analyzePodcastDjStream, analyzePodcastDjIntro } = require('./dj-analyzer');
+const yandex = require('./yandex');
 
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -2344,6 +2345,7 @@ function audioProxyHeadersFor(audioUrl, range) {
   try {
     const host = new URL(audioUrl).hostname.toLowerCase();
     if (host.includes('qq.com') || host.includes('qpic.cn')) headers.Referer = 'https://y.qq.com/';
+    else if (host.includes('yandex.net') || host.includes('yandex.ru')) { delete headers.Referer; }
   } catch (e) {}
   if (range) headers.Range = range;
   return headers;
@@ -3460,6 +3462,127 @@ const server = http.createServer(async (req, res) => {
     } catch (err) {
       console.error('[QQLyric]', err);
       sendJSON(res, { provider: 'qq', error: err.message, lyric: '' }, 500);
+    }
+    return;
+  }
+
+  // ---------- Yandex Music (RU) ----------
+  if (pn === '/api/ya/search') {
+    try {
+      const kw = url.searchParams.get('keywords') || '';
+      const limit = Math.max(4, Math.min(40, parseInt(url.searchParams.get('limit') || '12', 10) || 12));
+      const songs = await yandex.search(kw, limit);
+      sendJSON(res, { provider: 'yandex', songs });
+    } catch (err) {
+      console.error('[YaSearch]', err);
+      sendJSON(res, { provider: 'yandex', error: err.message, songs: [] }, 500);
+    }
+    return;
+  }
+
+  if (pn === '/api/ya/song/url') {
+    try {
+      const id = url.searchParams.get('id') || url.searchParams.get('trackId') || '';
+      const quality = url.searchParams.get('quality') || '';
+      const info = await yandex.trackUrl(id, quality);
+      sendJSON(res, info);
+    } catch (err) {
+      console.error('[YaSongUrl]', err);
+      sendJSON(res, { provider: 'yandex', url: '', playable: false, error: err.message }, 500);
+    }
+    return;
+  }
+
+  if (pn === '/api/ya/lyric') {
+    try {
+      const id = url.searchParams.get('id') || url.searchParams.get('trackId') || '';
+      const data = await yandex.lyric(id);
+      sendJSON(res, data);
+    } catch (err) {
+      console.error('[YaLyric]', err);
+      sendJSON(res, { provider: 'yandex', error: err.message, lyric: '' }, 500);
+    }
+    return;
+  }
+
+  if (pn === '/api/ya/login/status') {
+    try {
+      const info = await yandex.getLoginInfo();
+      sendJSON(res, info);
+    } catch (err) {
+      console.error('[YaLoginStatus]', err);
+      sendJSON(res, { provider: 'yandex', loggedIn: false, error: err.message }, 500);
+    }
+    return;
+  }
+
+  if (pn === '/api/ya/login/token') {
+    try {
+      const body = await readRequestBody(req);
+      const token = String(body.token || body.access_token || body.data || '').trim();
+      if (!token) {
+        sendJSON(res, { provider: 'yandex', loggedIn: false, error: 'MISSING_TOKEN' }, 400);
+        return;
+      }
+      const info = await yandex.login(token);
+      if (!info.loggedIn) yandex.saveToken('');
+      sendJSON(res, { ...info, saved: !!info.loggedIn });
+    } catch (err) {
+      console.error('[YaLoginToken]', err);
+      sendJSON(res, { provider: 'yandex', loggedIn: false, error: err.message }, 500);
+    }
+    return;
+  }
+
+  if (pn === '/api/ya/logout') {
+    sendJSON(res, yandex.logout());
+    return;
+  }
+
+  if (pn === '/api/ya/user/playlists') {
+    try {
+      const data = await yandex.userPlaylists();
+      sendJSON(res, data);
+    } catch (err) {
+      console.error('[YaUserPlaylists]', err);
+      sendJSON(res, { provider: 'yandex', loggedIn: false, error: err.message, playlists: [] }, 500);
+    }
+    return;
+  }
+
+  if (pn === '/api/ya/playlist/tracks') {
+    try {
+      const kind = url.searchParams.get('kind') || url.searchParams.get('id') || '';
+      const owner = url.searchParams.get('owner') || url.searchParams.get('uid') || '';
+      const data = await yandex.playlistTracks(kind, owner);
+      sendJSON(res, data);
+    } catch (err) {
+      console.error('[YaPlaylistTracks]', err);
+      sendJSON(res, { provider: 'yandex', error: err.message, tracks: [] }, 500);
+    }
+    return;
+  }
+
+  if (pn === '/api/ya/likelist') {
+    try {
+      const ids = await yandex.likedTrackIds();
+      sendJSON(res, { provider: 'yandex', ids });
+    } catch (err) {
+      console.error('[YaLikelist]', err);
+      sendJSON(res, { provider: 'yandex', error: err.message, ids: [] }, 500);
+    }
+    return;
+  }
+
+  if (pn === '/api/ya/song/like') {
+    try {
+      const id = url.searchParams.get('id') || url.searchParams.get('trackId') || '';
+      const like = String(url.searchParams.get('like') || 'true') === 'true';
+      const data = await yandex.setLike(id, like);
+      sendJSON(res, data);
+    } catch (err) {
+      console.error('[YaSongLike]', err);
+      sendJSON(res, { ok: false, error: err.message }, 500);
     }
     return;
   }
