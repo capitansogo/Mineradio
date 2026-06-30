@@ -29,9 +29,7 @@ jobs:
         run: node --check server.js && node --check yandex.js
 
       - name: Build NSIS installer
-        run: npm run build:win
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run build:win -- --publish never
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
@@ -49,6 +47,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            dist/*-Setup.exe dist/*-Setup.exe.blockmap dist/latest.yml \
-            --title "$GITHUB_REF_NAME" --generate-notes
+          # Заметки релиза = верхняя секция CHANGELOG.md (фолбэк — автогенерация).
+          awk '/^## /{c++} c==1{print} c==2{exit}' CHANGELOG.md > release-notes.md
+          if [ -s release-notes.md ]; then
+            gh release create "$GITHUB_REF_NAME" \
+              dist/*-Setup.exe dist/*-Setup.exe.blockmap dist/latest.yml \
+              --title "$GITHUB_REF_NAME" --notes-file release-notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              dist/*-Setup.exe dist/*-Setup.exe.blockmap dist/latest.yml \
+              --title "$GITHUB_REF_NAME" --generate-notes
+          fi
