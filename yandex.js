@@ -288,16 +288,44 @@ async function userPlaylists() {
     if (!uid) return {provider: 'yandex', loggedIn: false, playlists: []};
     const result = await apiJson('/users/' + encodeURIComponent(uid) + '/playlists/list');
     const playlists = (Array.isArray(result) ? result : []).map(mapPlaylist).filter(p => p.id);
-    // 「我喜欢的音乐」是 kind=3 的特殊歌单，单独补一个入口。
-    const hasLiked = playlists.some(p => p.kind === '3');
-    if (!hasLiked) {
-        playlists.unshift({
-            provider: 'yandex', source: 'yandex', type: 'playlist',
-            id: '3', kind: '3', ownerUid: String(uid),
-            name: 'Мне нравится', cover: '', trackCount: 0, creator: '',
-        });
+    // «Мне нравится» (kind=3) — особый плейлист, его нет в общем списке.
+    // Тянем его метаданные отдельно (реальный счётчик + обложка-мозаика).
+    if (!playlists.some(p => p.kind === '3')) {
+        let liked = null;
+        try {
+            const meta = await apiJson('/users/' + encodeURIComponent(uid) + '/playlists/3');
+            if (meta) liked = mapPlaylist(meta);
+        } catch (e) { /* fallback ниже */ }
+        if (!liked || !liked.id) {
+            liked = {
+                provider: 'yandex', source: 'yandex', type: 'playlist',
+                id: '3', kind: '3', ownerUid: String(uid),
+                name: 'Мне нравится', cover: '', trackCount: 0, creator: '',
+            };
+        }
+        liked.name = liked.name || 'Мне нравится';
+        liked.kind = '3';
+        liked.id = '3';
+        playlists.unshift(liked);
     }
     return {provider: 'yandex', loggedIn: true, playlists};
+}
+
+// Резолв полных треков по id (для плейлистов, отдающих «шорты» без названий, напр. «Мне нравится»).
+async function resolveTracks(ids) {
+    const list = (Array.isArray(ids) ? ids : []).map(String).filter(Boolean);
+    if (!list.length) return [];
+    const out = [];
+    for (let i = 0; i < list.length; i += 100) {
+        const batch = list.slice(i, i + 100);
+        try {
+            const {text} = await apiRequest('/tracks', {method: 'POST', body: {'track-ids': batch.join(',')}});
+            const arr = JSON.parse(text);
+            const res = (arr && arr.result) || [];
+            res.forEach(tk => { const m = mapTrack(tk); if (m.id && m.name) out.push(m); });
+        } catch (e) { /* пропускаем битый батч */ }
+    }
+    return out;
 }
 
 async function playlistTracks(kind, ownerUid) {
@@ -307,7 +335,13 @@ async function playlistTracks(kind, ownerUid) {
     if (!uid) return {provider: 'yandex', loggedIn: false, error: 'LOGIN_REQUIRED', tracks: []};
     const result = await apiJson('/users/' + encodeURIComponent(uid) + '/playlists/' + encodeURIComponent(k));
     const rawTracks = (result && result.tracks) || [];
-    const tracks = rawTracks.map(mapTrack).filter(t => t.id && t.name);
+    let tracks = rawTracks.map(mapTrack).filter(t => t.id && t.name);
+    // Шорты без названий (kind=3 и т.п.) — добираем полные треки по id.
+    if (!tracks.length) {
+        let ids = rawTracks.map(t => String((t && (t.id != null ? t.id : t.trackId != null ? t.trackId : '')) || '')).filter(Boolean);
+        if (!ids.length && k === '3') ids = await likedTrackIds();
+        if (ids.length) tracks = await resolveTracks(ids);
+    }
     return {
         provider: 'yandex',
         name: (result && result.title) || '',
@@ -316,9 +350,44 @@ async function playlistTracks(kind, ownerUid) {
     };
 }
 
+// Простой GET без авторизационных заголовков (для скачивания файла текста с CDN).
+function plainGet(targetUrl) {
+    return new Promise((resolve, reject) => {
+        const u = new URL(targetUrl);
+        const lib = u.protocol === 'http:' ? require('http') : https;
+        const reqObj = lib.request(u, {method: 'GET'}, response => {
+            const chunks = [];
+            response.on('data', c => chunks.push(c));
+            response.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+        });
+        reqObj.setTimeout(12000, () => reqObj.destroy(new Error('Yandex lyrics download timeout')));
+        reqObj.on('error', reject);
+        reqObj.end();
+    });
+}
+
+// Синхронные тексты (LRC). Подпись: base64(HMAC-SHA256(KEY, trackId + timestamp)).
+const LYRICS_SIGN_KEY = 'p93jhgh689SBReK6ghtw62';
 async function lyric(trackId) {
-    // 歌词需要额外签名/接口，先返回空，后续里程碑接入。
-    return {provider: 'yandex', id: String(trackId || ''), lyric: '', supported: false};
+    const id = String(trackId || '').trim();
+    if (!id) return {provider: 'yandex', id: '', lyric: '', supported: false};
+    if (!hasToken()) return {provider: 'yandex', id, lyric: '', supported: false};
+    // Сначала пробуем синхронный LRC, затем простой TEXT (у части треков нет тайм-кодов).
+    for (const format of ['LRC', 'TEXT']) {
+        try {
+            const ts = Math.floor(Date.now() / 1000);
+            const sign = crypto.createHmac('sha256', LYRICS_SIGN_KEY).update(id + ts).digest('base64');
+            const params = new URLSearchParams({format, timeStamp: String(ts), sign});
+            const meta = await apiJson('/tracks/' + encodeURIComponent(id) + '/lyrics?' + params.toString());
+            const downloadUrl = meta && meta.downloadUrl;
+            if (!downloadUrl) continue;
+            const text = await plainGet(downloadUrl);
+            if (text && text.trim()) {
+                return {provider: 'yandex', id, lyric: text, format: format.toLowerCase(), supported: true};
+            }
+        } catch (e) { /* пробуем следующий формат / у трека нет текста */ }
+    }
+    return {provider: 'yandex', id, lyric: '', supported: false};
 }
 
 // Список id треков из «Мне нравится» (kind=3) — для синхронизации состояния лайков.
@@ -348,6 +417,30 @@ async function setLike(trackId, on) {
     return {ok: true, liked: !!on};
 }
 
+// «Моя волна» — персональная радиостанция (rotor). queueLastId продолжает очередь (следующий батч).
+async function myWave(queueLastId) {
+    if (!hasToken()) return {provider: 'yandex', loggedIn: false, tracks: []};
+    await ensureUid();
+    let endpoint = '/rotor/station/user:onyourwave/tracks?settings2=true';
+    if (queueLastId) endpoint += '&queue=' + encodeURIComponent(queueLastId);
+    const result = await apiJson(endpoint);
+    const seq = (result && result.sequence) || [];
+    const tracks = seq.map(item => mapTrack(item && item.track)).filter(t => t.id && t.name);
+    return {provider: 'yandex', loggedIn: true, batchId: (result && result.batchId) || '', tracks};
+}
+
+// Личные рекомендованные плейлисты с ленты (Плейлист дня, Дежавю и т.п.).
+async function feedPlaylists() {
+    if (!hasToken()) return {provider: 'yandex', loggedIn: false, playlists: []};
+    const result = await apiJson('/feed');
+    const generated = (result && result.generatedPlaylists) || [];
+    const playlists = generated
+        .filter(g => g && g.data)
+        .map(g => Object.assign(mapPlaylist(g.data), {feedType: g.type || ''}))
+        .filter(p => p.id && p.name);
+    return {provider: 'yandex', loggedIn: true, playlists};
+}
+
 module.exports = {
     getToken,
     saveToken,
@@ -362,6 +455,8 @@ module.exports = {
     lyric,
     likedTrackIds,
     setLike,
+    myWave,
+    feedPlaylists,
     coverUrl,
     mapTrack,
     TOKEN_FILE,

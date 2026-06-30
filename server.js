@@ -3587,6 +3587,29 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (pn === '/api/ya/wave') {
+    try {
+      const queue = url.searchParams.get('queue') || '';
+      const data = await yandex.myWave(queue);
+      sendJSON(res, data);
+    } catch (err) {
+      console.error('[YaWave]', err);
+      sendJSON(res, { provider: 'yandex', error: err.message, tracks: [] }, 500);
+    }
+    return;
+  }
+
+  if (pn === '/api/ya/feed') {
+    try {
+      const data = await yandex.feedPlaylists();
+      sendJSON(res, data);
+    } catch (err) {
+      console.error('[YaFeed]', err);
+      sendJSON(res, { provider: 'yandex', error: err.message, playlists: [] }, 500);
+    }
+    return;
+  }
+
   // ---------- 歌曲URL ----------
   if (pn === '/api/qq/login/status') {
     try {
@@ -4264,7 +4287,13 @@ const server = http.createServer(async (req, res) => {
         res.end('Invalid cover url');
         return;
       }
-      const resp = await fetch(coverUrl, { headers: { 'User-Agent': UA, 'Referer': 'https://music.163.com/' } });
+      const coverHeaders = { 'User-Agent': UA, 'Referer': 'https://music.163.com/' };
+      try {
+        const coverHost = new URL(coverUrl).hostname.toLowerCase();
+        if (coverHost.includes('qq.com') || coverHost.includes('qpic.cn')) coverHeaders.Referer = 'https://y.qq.com/';
+        else if (coverHost.includes('yandex.net') || coverHost.includes('yandex.ru')) delete coverHeaders.Referer;
+      } catch (e) {}
+      const resp = await fetch(coverUrl, { headers: coverHeaders });
       const ct  = resp.headers.get('content-type') || 'image/jpeg';
       const cl  = resp.headers.get('content-length');
       const hdr = {
