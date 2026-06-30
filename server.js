@@ -1780,6 +1780,34 @@ async function requestJson(targetUrl, opts, body) {
   }
 }
 
+// LRCLIB — открытый бесплатный API синхронных текстов (LRC). Без ключа.
+const LRCLIB_UA = 'Mineradio-RU (https://github.com/capitansogo/Mineradio)';
+async function fetchLrclibLyrics(artist, title, album, duration) {
+  if (!title) return { lyric: '', synced: false, source: 'lrclib' };
+  const getParams = new URLSearchParams();
+  if (artist) getParams.set('artist_name', artist);
+  getParams.set('track_name', title);
+  if (album) getParams.set('album_name', album);
+  const dur = parseInt(duration, 10) || 0;
+  if (dur) getParams.set('duration', String(dur));
+  try {
+    const r = await requestJson('https://lrclib.net/api/get?' + getParams.toString(), { headers: { 'User-Agent': LRCLIB_UA } });
+    if (r && (r.syncedLyrics || r.plainLyrics)) {
+      return { lyric: r.syncedLyrics || r.plainLyrics, synced: !!r.syncedLyrics, source: 'lrclib' };
+    }
+  } catch (e) { /* нет точного совпадения — пробуем поиск */ }
+  try {
+    const sp = new URLSearchParams();
+    sp.set('track_name', title);
+    if (artist) sp.set('artist_name', artist);
+    const arr = await requestJson('https://lrclib.net/api/search?' + sp.toString(), { headers: { 'User-Agent': LRCLIB_UA } });
+    const list = Array.isArray(arr) ? arr : [];
+    const best = list.find(x => x && x.syncedLyrics) || list.find(x => x && x.plainLyrics);
+    if (best) return { lyric: best.syncedLyrics || best.plainLyrics, synced: !!best.syncedLyrics, source: 'lrclib' };
+  } catch (e) { /* ничего не нашли */ }
+  return { lyric: '', synced: false, source: 'lrclib' };
+}
+
 function clampNumber(value, min, max, fallback) {
   if (value === null || value === undefined || value === '') return fallback;
   const n = Number(value);
@@ -3606,6 +3634,34 @@ const server = http.createServer(async (req, res) => {
     } catch (err) {
       console.error('[YaFeed]', err);
       sendJSON(res, { provider: 'yandex', error: err.message, playlists: [] }, 500);
+    }
+    return;
+  }
+
+  if (pn === '/api/ya/artist/detail') {
+    try {
+      const id = url.searchParams.get('id') || '';
+      const limit = parseInt(url.searchParams.get('limit') || '36', 10) || 36;
+      const data = await yandex.artistDetail(id, limit);
+      sendJSON(res, data);
+    } catch (err) {
+      console.error('[YaArtistDetail]', err);
+      sendJSON(res, { provider: 'yandex', error: err.message, artist: null, songs: [] }, 500);
+    }
+    return;
+  }
+
+  if (pn === '/api/lrclib') {
+    try {
+      const artist = url.searchParams.get('artist') || '';
+      const title = url.searchParams.get('title') || '';
+      const album = url.searchParams.get('album') || '';
+      const duration = url.searchParams.get('duration') || '';
+      const data = await fetchLrclibLyrics(artist, title, album, duration);
+      sendJSON(res, data);
+    } catch (err) {
+      console.error('[Lrclib]', err);
+      sendJSON(res, { lyric: '', synced: false, error: err.message }, 500);
     }
     return;
   }

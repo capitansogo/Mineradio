@@ -18068,6 +18068,15 @@ function bindTrackDetailScrollers() {
 function closeTrackDetailModal() {
   closeGsapModal(document.getElementById('track-detail-modal'));
 }
+function currentYandexArtistId(song) {
+  if (!song || songProviderKey(song) !== 'yandex') return '';
+  if (song.artistId) return String(song.artistId);
+  var artists = song.artists || [];
+  for (var i = 0; i < artists.length; i++) {
+    if (artists[i] && artists[i].id) return String(artists[i].id);
+  }
+  return '';
+}
 function openTrackDetailModal(type, songOverride) {
   var song = songOverride || currentCoverSong();
   if (!song) { showToast('先播放或选择一首歌'); return; }
@@ -18083,9 +18092,11 @@ function openTrackDetailModal(type, songOverride) {
   if (type === 'artist') {
     var artistId = currentArtistId(song);
     var qqArtistMid = currentQQArtistMid(song);
+    var yaArtistId = currentYandexArtistId(song);
     var artistDetailUrl = artistId
       ? ('/api/artist/detail?id=' + encodeURIComponent(artistId) + '&limit=36')
-      : (qqArtistMid ? ('/api/qq/artist/detail?mid=' + encodeURIComponent(qqArtistMid) + '&limit=36') : '');
+      : (qqArtistMid ? ('/api/qq/artist/detail?mid=' + encodeURIComponent(qqArtistMid) + '&limit=36')
+        : (yaArtistId ? ('/api/ya/artist/detail?id=' + encodeURIComponent(yaArtistId) + '&limit=36') : ''));
     var artistName = artists.join(' / ') || song.artist || '未知歌手';
     var artistNamesForMatch = artists.length ? artists : (song.artist ? [song.artist] : []);
     var artistInitial = artistName && artistName !== '未知歌手' ? artistName.slice(0, 1) : '歌';
@@ -20739,6 +20750,16 @@ function buildPlainLyricLines(text) {
     return { t: i * step, text: textLine, duration: step, charCount: Math.max(1, textLine.length) };
   });
 }
+async function fetchLrclibLyric(song, token) {
+  if (!song || !song.name) return null;
+  try {
+    var dur = song.duration ? Math.round(song.duration / 1000) : (audio && isFinite(audio.duration) ? Math.round(audio.duration) : 0);
+    var ll = await apiJson('/api/lrclib?artist=' + encodeURIComponent(song.artist || '') + '&title=' + encodeURIComponent(song.name || '') + '&album=' + encodeURIComponent(song.album || '') + '&duration=' + dur);
+    if (token !== trackSwitchToken || !ll || !ll.lyric) return null;
+    var lines = ll.synced ? parseLyricText(ll.lyric) : buildPlainLyricLines(ll.lyric);
+    return (lines && lines.length) ? lines : null;
+  } catch (e) { return null; }
+}
 async function fetchLyric(songOrId, token) {
   try {
     var song = (songOrId && typeof songOrId === 'object') ? songOrId : null;
@@ -20766,6 +20787,12 @@ async function fetchLyric(songOrId, token) {
     if ((!lines.length || lines[0].fallback) && !nativeLines.length && !lrcLines.length && r.lyric && !isNoLyricText(r.lyric)) {
       var plainLines = buildPlainLyricLines(r.lyric);
       if (plainLines.length) { lines = plainLines; timingSource = 'plain'; }
+    }
+    // Фолбэк на LRCLIB (открытые синхронные тексты), если у провайдера текста нет.
+    if (!lines.length || lines[0].fallback) {
+      var lrclibLines = await fetchLrclibLyric(song, token);
+      if (token !== trackSwitchToken) return;
+      if (lrclibLines && lrclibLines.length) { lines = lrclibLines; timingSource = 'lrclib'; }
     }
     setOriginalLyricsState(lines, hasNativeKaraoke, timingSource);
     applyPreferredLyricsForCurrent(true);

@@ -441,6 +441,36 @@ async function feedPlaylists() {
     return {provider: 'yandex', loggedIn: true, playlists};
 }
 
+// Страница исполнителя: инфо + популярные треки.
+async function artistDetail(artistId, limit) {
+    const id = String(artistId || '').trim();
+    if (!id) return {provider: 'yandex', error: 'MISSING_ARTIST_ID', artist: null, songs: []};
+    if (!hasToken()) return {provider: 'yandex', error: 'LOGIN_REQUIRED', artist: null, songs: []};
+    const num = Math.max(10, Math.min(60, Number(limit) || 40));
+    const brief = await apiJson('/artists/' + encodeURIComponent(id) + '/brief-info');
+    const a = (brief && brief.artist) || {};
+    let tracks = ((brief && brief.popularTracks) || []).map(mapTrack).filter(t => t.id && t.name);
+    if (!tracks.length) {
+        try {
+            const tr = await apiJson('/artists/' + encodeURIComponent(id) + '/tracks?page=0&page-size=' + num);
+            tracks = ((tr && tr.tracks) || []).map(mapTrack).filter(t => t.id && t.name);
+        } catch (e) { /* у исполнителя нет треков */ }
+    }
+    const cover = a.cover && (a.cover.uri || (a.cover.itemsUri && a.cover.itemsUri[0]));
+    return {
+        provider: 'yandex',
+        artist: {
+            provider: 'yandex',
+            id: a.id != null ? String(a.id) : id,
+            name: a.name || '',
+            avatar: coverUrl(cover, 300),
+            fans: (a.counts && (a.counts.likes || a.likesCount || 0)) || 0,
+            musicSize: (a.counts && a.counts.tracks) || tracks.length,
+        },
+        songs: tracks.slice(0, num),
+    };
+}
+
 module.exports = {
     getToken,
     saveToken,
@@ -457,6 +487,7 @@ module.exports = {
     setLike,
     myWave,
     feedPlaylists,
+    artistDetail,
     coverUrl,
     mapTrack,
     TOKEN_FILE,
